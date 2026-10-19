@@ -1,0 +1,18 @@
+services:
+  importer:
+    build: .
+    volumes:
+    - ./importer:/app
+    restart: unless-stopped
+    command: sh -c "go run ./cmd/worker"   # вместо бинаря
+    environment:
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB: ${MONGO_DB}
+      REDIS_ADDR: ${REDIS_ADDR}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - api_apinet
+
+networks:
+  api_apinet:
+    external: true
