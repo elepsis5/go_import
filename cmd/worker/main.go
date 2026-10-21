@@ -9,12 +9,12 @@ import (
 	"syscall"
 	"time"
 
-	"importer/internal/config"
-	"importer/internal/importer"
-	"importer/internal/mongo"
-	"importer/internal/queue"
+	"test/internal/config"
+	"test/internal/importer"
+	"test/internal/mongo"
+	"test/internal/queue"
 
-	"go.mongodb.org/mongo-driver/mongo/options"
+	// "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
@@ -125,7 +125,7 @@ func runWorker(cfg config.Config) {
 	<-sig
 	logger.Println("shutting down: waiting for current jobs...")
 
-	cancel()           // горутины выходят из Consume по ctx.Done()
-	wg.Wait()          // дожидаемся завершения текущих Execute
+	cancel()  // горутины выходят из Consume по ctx.Done()
+	wg.Wait() // дожидаемся завершения текущих Execute
 	logger.Println("shutdown complete")
 }
