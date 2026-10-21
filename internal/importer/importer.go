@@ -2,11 +2,10 @@ package importer
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 
-	"importer/internal/models"
-	"importer/internal/queue"
+	"test/internal/models"
+	"test/internal/queue"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -19,9 +18,10 @@ type Importer struct {
 	logger *log.Logger
 	// dbCategories / eqCategories / supplierID / syncType —
 	// те же поля, что обсуждали в execute и createProduct
-	dbCategories  map[string]models.Category
-	eqCategories  map[string]*models.EqCategory
-	supplierID    string
+	dbCategories     map[string]models.Category
+	eqCategories     map[string]*models.EqCategory
+	supplierID       string
+	syncType         string
 	activeCategories []string
 }
 
@@ -43,10 +43,15 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 	// 1. Забираем записи импорта по _id — чанк уже определён PHP-джобой,
 	//    поэтому условной блокировки не нужно (retry учтём отдельно).
 	var importProducts []models.ImportProduct
-	err := i.db.Collection("import_products").Find(ctx, bson.M{
+	cur, err := i.db.Collection("import_products").Find(ctx, bson.M{
 		"_id":              bson.M{"$in": ids},
 		"import_completed": bson.M{"$ne": true},
-	}).All(ctx, &importProducts)
+	})
+	if err != nil {
+		return err
+	}
+
+	err = cur.All(ctx, &importProducts)
 	if err != nil {
 		return err
 	}
@@ -56,8 +61,14 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 	if err != nil {
 		return err
 	}
+
+	importStruct, err := i.loadImport(ctx)
+	if err != nil {
+		return err
+	}
+
 	i.supplierID = supplier.ID.Hex()
-	i.syncType = /* из импорта, аналогично getImportType() */
+	i.syncType = importStruct.Type
 
 	if err := i.loadCategories(ctx); err != nil {
 		return err

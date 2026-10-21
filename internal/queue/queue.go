@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"test/internal/config"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,25 +19,25 @@ type ImportJob struct {
 }
 
 type Client struct {
-	rdb *redis.Client
-	key string
+	Client *redis.Client
+	key    string
 }
 
-func New(addr, password string, db int, key string) *Client {
+func New(cfg config.Config) *Client {
 	return &Client{
-		rdb: redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: password,
-			DB:       db,
+		Client: redis.NewClient(&redis.Options{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
 		}),
-		key: key,
+		key: cfg.QueueKey,
 	}
 }
 
 // Consume блокируется до появления сообщения (BLPOP).
 // Таймаут 5 сек нужен, чтобы корректно реагировать на shutdown.
 func (c *Client) Consume(ctx context.Context) (*ImportJob, error) {
-	res, err := c.rdb.BLPop(ctx, 5*time.Second, c.key).Result()
+	res, err := c.Client.BLPop(ctx, 5*time.Second, c.key).Result()
 	if err != nil {
 		if err == redis.Nil || ctx.Err() != nil {
 			return nil, nil // тихий таймаут — не ошибка

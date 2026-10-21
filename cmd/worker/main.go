@@ -48,7 +48,7 @@ func runHealthcheck(cfg config.Config) int {
 	}
 
 	q := queue.New(cfg)
-	if err := q.Ping(ctx); err != nil {
+	if err := q.Client.Ping(ctx); err != nil {
 		log.Printf("healthcheck: redis ping failed: %v", err)
 		return 1
 	}
