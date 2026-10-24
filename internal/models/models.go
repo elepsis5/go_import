@@ -61,7 +61,7 @@ type Import struct {
 	ID          primitive.ObjectID `bson:"_id,omitempty"`
 	SupplierID  primitive.ObjectID `bson:"supplier_id"`
 	Status      string             `bson:"status"` // StatusQueued / Processing / Completed / Failed
-	TotalCount  int64              `bson:"total_count"`
+	Total       int64              `bson:"total_count"`
 	DoneCount   int64              `bson:"done_count"`
 	FailedCount int64              `bson:"failed_count"`
 	Error       string             `bson:"error,omitempty"` // последняя ошибка, если была

@@ -2,7 +2,10 @@ package importer
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"strings"
 
 	"test/internal/models"
 	"test/internal/queue"
@@ -18,8 +21,8 @@ type Importer struct {
 	logger *log.Logger
 	// dbCategories / eqCategories / supplierID / syncType —
 	// те же поля, что обсуждали в execute и createProduct
-	dbCategories     map[string]models.Category
-	eqCategories     map[string]*models.EqCategory
+	// dbCategories     map[string]models.Category
+	// eqCategories     map[string]*models.EqCategory
 	supplierID       string
 	syncType         string
 	activeCategories []string
@@ -165,4 +168,33 @@ func (i *Importer) writeResult(ctx context.Context, job *queue.ImportJob, count 
 		options.Update().SetUpsert(true),
 	)
 	return err
+}
+
+func (i *Importer) loadSupplier(ctx context.Context, id string) (string, error) {
+	nid := strings.TrimSpace(id)
+	if len(nid) == 0 {
+		return "", errors.New("Suppliers ID must not be empty")
+	}
+	return nid, nil
+}
+
+func (i *Importer) loadImport(ctx context.Context, job *queue.ImportJob) (*models.Import, error) {
+	cur, err := i.db.Collection("imports").Find(ctx, bson.M{"_id": job.ImportID})
+	if err != nil {
+		return nil, err
+	}
+
+	// Обязательно закрываем курсор, чтобы не было утечек соединений
+	defer cur.Close(ctx)
+
+	var imp models.Import
+
+	if err := cur.Decode(&imp); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("import not found for ID %v: %w", job.ImportID, err)
+		}
+		return nil, err
+	}
+
+	return &imp, nil
 }
