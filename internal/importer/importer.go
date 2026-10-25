@@ -16,6 +16,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// Статусы импорта — согласованы со стороной PHP.
+// PHP ставит queued перед RPUSH, воркер двигает дальше.
+const (
+	StatusQueued     = "queued"
+	StatusProcessing = "processing"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+)
+
 type Importer struct {
 	db     *mongo.Database
 	logger *log.Logger
@@ -65,7 +74,7 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 		return err
 	}
 
-	importStruct, err := i.loadImport(ctx)
+	importStruct, err := i.loadImport(ctx, job)
 	if err != nil {
 		return err
 	}
@@ -73,12 +82,13 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 	i.supplierID = supplier.ID.Hex()
 	i.syncType = importStruct.Type
 
-	if err := i.loadCategories(ctx); err != nil {
+	categories, err := i.loadCategories(ctx)
+	if err != nil {
 		return err
 	}
-	if err := i.loadEqCategories(ctx, job.ImportID); err != nil {
-		return err
-	}
+	// if err := i.loadEqCategories(ctx, job.ImportID); err != nil {
+	// 	return err
+	// }
 
 	// 3. Основной цикл — как в PHP: собираем bulk-операции
 	var createOps, updateOps []mongo.WriteModel
@@ -170,12 +180,24 @@ func (i *Importer) writeResult(ctx context.Context, job *queue.ImportJob, count 
 	return err
 }
 
-func (i *Importer) loadSupplier(ctx context.Context, id string) (string, error) {
-	nid := strings.TrimSpace(id)
-	if len(nid) == 0 {
-		return "", errors.New("Suppliers ID must not be empty")
+func (i *Importer) loadSupplier(ctx context.Context, id string) (*models.Supplier, error) {
+	uid := strings.TrimSpace(id)
+	if len(uid) == 0 {
+		return nil, errors.New("Suppliers ID must not be empty")
 	}
-	return nid, nil
+	cur, err := i.db.Collection("suppliers").Find(ctx, bson.M{"_id": uid})
+	if err != nil {
+		return nil, err
+	}
+
+	var supplier models.Supplier
+	if err := cur.Decode(&supplier); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("Supplier not found for ID %v: %w", uid, err)
+		}
+		return nil, err
+	}
+	return &supplier, nil
 }
 
 func (i *Importer) loadImport(ctx context.Context, job *queue.ImportJob) (*models.Import, error) {
@@ -197,4 +219,19 @@ func (i *Importer) loadImport(ctx context.Context, job *queue.ImportJob) (*model
 	}
 
 	return &imp, nil
+}
+
+func (i *Importer) loadCategories(ctx context.Context) ([]models.Category, error) {
+	cur, err := i.db.Collection("categories").Find(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var slc []models.Category
+	err = cur.All(ctx, &slc)
+	if err != nil {
+		return nil, err
+	}
+	return slc, nil
 }
