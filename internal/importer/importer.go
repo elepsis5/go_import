@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
+	"time"
 
 	"test/internal/models"
 	"test/internal/queue"
@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.uber.org/zap"
 )
 
 // Статусы импорта — согласованы со стороной PHP.
@@ -27,7 +28,7 @@ const (
 
 type Importer struct {
 	db     *mongo.Database
-	logger *log.Logger
+	logger *zap.Logger
 	// dbCategories / eqCategories / supplierID / syncType —
 	// те же поля, что обсуждали в execute и createProduct
 	// dbCategories     map[string]models.Category
@@ -37,16 +38,23 @@ type Importer struct {
 	activeCategories []string
 }
 
-func New(db *mongo.Database, logger *log.Logger) *Importer {
-	return &Importer{db: db, logger: logger}
+func New(db *mongo.Database) (*Importer, error) {
+	// logger, err := zap.NewProduction() // или zap.NewDevelopment() для локального дебага
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		return nil, err
+	}
+	return &Importer{db: db, logger: logger}, nil
 }
 
 func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
+	i.logger.Info("мы внутри Execute")
+
 	ids := make([]primitive.ObjectID, 0, len(job.ProductIDs))
 	for _, idStr := range job.ProductIDs {
 		oid, err := primitive.ObjectIDFromHex(idStr)
 		if err != nil {
-			i.logger.Printf("bad product id %q: %v", idStr, err)
+			i.logger.Error("bad product id", zap.String("id", idStr))
 			continue
 		}
 		ids = append(ids, oid)
@@ -98,13 +106,17 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 	for _, imp := range importProducts {
 		switch imp.Validation.Status {
 		case "create":
-			product, err := i.createProduct(ctx, imp)
+			product, err := i.CreateProduct(ctx, imp, categories)
 			if err != nil {
-				i.logger.Printf("create failed (article=%s): %v", imp.Article, err)
+				fields := []zap.Field{
+					zap.String("article", imp.Article),
+					zap.Error(err),
+				}
+				i.logger.Error("create failed", fields...)
 				continue // не роняем весь чанк из-за одного товара
 			}
 			createOps = append(createOps,
-				mongo.NewInsertOneModel().SetDocument(product.Attrs()))
+				mongo.NewInsertOneModel().SetDocument(product))
 			completedIDs = append(completedIDs, imp.ID)
 			countProducts++
 
@@ -119,21 +131,25 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 			} else if err != nil {
 				return err
 			}
-			updated, err := i.updateProduct(ctx, imp, existing)
+			updated, err := i.UpdateProduct(ctx, imp, existing, categories)
 			if err != nil {
-				i.logger.Printf("update failed (article=%s): %v", imp.Article, err)
+				fields := []zap.Field{
+					zap.String("article", imp.Article),
+					zap.Error(err),
+				}
+				i.logger.Error("update failed", fields...)
 				continue
 			}
 			updateOps = append(updateOps,
 				mongo.NewUpdateOneModel().
 					SetFilter(bson.M{"_id": existing.ID}).
-					SetUpdate(bson.M{"$set": updated.Attrs()}).
+					SetUpdate(bson.M{"$set": updated}).
 					SetUpsert(false))
 			completedIDs = append(completedIDs, imp.ID)
 			countProducts++
 
 		case "unchanged":
-			i.handleUnchanged(ctx, imp) // активация категории и т.д.
+			// i.handleUnchanged(ctx, imp) // активация категории и т.д.
 			completedIDs = append(completedIDs, imp.ID)
 			countProducts++
 		}
@@ -234,4 +250,41 @@ func (i *Importer) loadCategories(ctx context.Context) ([]models.Category, error
 		return nil, err
 	}
 	return slc, nil
+}
+
+func (i *Importer) logBulkResult(op string, res *mongo.BulkWriteResult) {
+	// res может быть nil при ошибке до начала bulk-операции
+	if res == nil {
+		i.logger.Error("bulk operation failed before execution", zap.String("op", op))
+		return
+	}
+
+	fields := []zap.Field{
+		zap.Int64("matched", res.MatchedCount),
+		zap.Int64("modified", res.ModifiedCount),
+		zap.Int64("upserted", res.UpsertedCount),
+		zap.Int64("inserted", res.InsertedCount),
+	}
+
+	i.logger.Info("bulk operation completed", fields...)
+}
+
+// completedOps формирует массив bulk-операций для пометки записей как обработанных
+func completedOps(ids []primitive.ObjectID) []mongo.WriteModel {
+	var ops []mongo.WriteModel
+	for _, id := range ids {
+		// Важно: в MongoDB _id может быть ObjectID или строкой — подстрой тип под свой проект
+		filter := bson.M{"_id": id}
+
+		update := bson.D{
+			{Key: "$set", Value: bson.D{
+				{Key: "status", Value: "processed"},
+				{Key: "processed_at", Value: time.Now()},
+			}},
+		}
+
+		op := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update)
+		ops = append(ops, op)
+	}
+	return ops
 }

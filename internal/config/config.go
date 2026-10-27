@@ -19,9 +19,9 @@ func FromEnv() Config {
 		MongoURI:      envOr("MONGO_URI", "mongodb://root:example@localhost:27017"),
 		MongoDB:       envOr("MONGO_DB", "marketplace"),
 		RedisAddr:     envOr("REDIS_ADDR", "localhost:6379"),
-		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+		RedisPassword: envOr("REDIS_PASSWORD", "benchpass"),
 		RedisDB:       0,
-		QueueKey:      envOr("GO_IMPORT_QUEUE", "go:import:jobs"),
+		QueueKey:      envOr("GO_IMPORT_QUEUE", "cards_imports"),
 		Workers:       4,
 	}
 }

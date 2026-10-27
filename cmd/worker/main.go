@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"test/internal/queue"
 
 	// "go.mongodb.org/mongo-driver/mongo"
+
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
@@ -62,11 +64,13 @@ func runWorker(cfg config.Config) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := log.New(os.Stdout, "importer ", log.LstdFlags|log.Lmsgprefix)
-
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true, // ← вот переключатель файла и строки
+	}))
 	mClient, err := mongo.Connect(ctx, cfg)
 	if err != nil {
-		logger.Fatalf("mongo connect: %v", err)
+		logger.Info("mongo connect: %v", err)
 	}
 	defer mClient.Disconnect(context.Background())
 
@@ -75,18 +79,24 @@ func runWorker(cfg config.Config) {
 	ctxPing, cancelPing := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelPing()
 	if err := mClient.Client.Ping(ctxPing, readpref.Primary()); err != nil {
-		logger.Fatalf("mongo ping: %v", err)
+		logger.Error("mongo ping: %v", err)
 	}
 
 	q := queue.New(cfg)
 
-	imp := importer.New(mClient.Client.Database(cfg.MongoDB), logger)
+	if err := q.Client.Ping(ctx); err != nil {
+		logger.Error("redis ping error", "error", err)
+	}
 
+	imp, err := importer.New(mClient.Client.Database(cfg.MongoDB))
+	if err != nil {
+		logger.Error("importer not created: %v", err)
+	}
 	// Graceful shutdown: ловим SIGINT (Ctrl+C) и SIGTERM (docker stop).
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Printf("worker started, queue=%q, workers=%d", cfg.QueueKey, cfg.Workers)
+	logger.Info("worker started, queue=%q, workers=%d", cfg.QueueKey, cfg.Workers)
 
 	var wg sync.WaitGroup
 	for w := 0; w < cfg.Workers; w++ {
@@ -96,13 +106,16 @@ func runWorker(cfg config.Config) {
 			for {
 				select {
 				case <-ctx.Done():
+					logger.Debug("лог ctx.Done()") ///////////////////////////////////////////////////
+
 					return
 				default:
 				}
+				logger.Debug("лог перед q.Consume") ///////////////////////////////////////////////////
 
 				job, err := q.Consume(ctx)
 				if err != nil {
-					logger.Printf("[worker %d] queue error: %v", id, err)
+					logger.Debug("[worker %d] queue error: %v", id, err)
 					time.Sleep(time.Second) // не долбим redis при сбоях
 					continue
 				}
@@ -110,22 +123,24 @@ func runWorker(cfg config.Config) {
 					continue
 				}
 
+				logger.Debug("лог перед imp.Execute") ///////////////////////////////////////////////////
+
 				start := time.Now()
 				if err := imp.Execute(ctx, job); err != nil {
-					logger.Printf("[worker %d] execute failed (import=%s supplier=%s): %v",
+					logger.Debug("[worker %d] execute failed (import=%s supplier=%s): %v",
 						id, job.ImportID, job.SupplierID, err)
 					continue
 				}
-				logger.Printf("[worker %d] import=%s supplier=%s done in %s (%d products)",
+				logger.Debug("[worker %d] import=%s supplier=%s done in %s (%d products)",
 					id, job.ImportID, job.SupplierID, time.Since(start), len(job.ProductIDs))
 			}
 		}(w)
 	}
 
 	<-sig
-	logger.Println("shutting down: waiting for current jobs...")
+	logger.Info("shutting down: waiting for current jobs...")
 
 	cancel()  // горутины выходят из Consume по ctx.Done()
 	wg.Wait() // дожидаемся завершения текущих Execute
-	logger.Println("shutdown complete")
+	logger.Info("shutdown complete")
 }
