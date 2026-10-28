@@ -70,7 +70,8 @@ func runWorker(cfg config.Config) {
 	}))
 	mClient, err := mongo.Connect(ctx, cfg)
 	if err != nil {
-		logger.Info("mongo connect: %v", err)
+		logger.Error("mongo connect:", slog.Any("error", err))
+		return
 	}
 	defer mClient.Disconnect(context.Background())
 
@@ -79,24 +80,24 @@ func runWorker(cfg config.Config) {
 	ctxPing, cancelPing := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelPing()
 	if err := mClient.Client.Ping(ctxPing, readpref.Primary()); err != nil {
-		logger.Error("mongo ping: %v", err)
+		logger.Error("mongo ping:", "error", err)
 	}
 
 	q := queue.New(cfg)
 
-	if err := q.Client.Ping(ctx); err != nil {
-		logger.Error("redis ping error", "error", err)
+	if err := q.Client.Ping(ctx).Err(); err != nil { // ← .Err() — вот чего не хватало
+		logger.Error("redis ping error", slog.String("err", err.Error()))
 	}
 
 	imp, err := importer.New(mClient.Client.Database(cfg.MongoDB))
 	if err != nil {
-		logger.Error("importer not created: %v", err)
+		logger.Error("importer not created:", "error", err)
 	}
 	// Graceful shutdown: ловим SIGINT (Ctrl+C) и SIGTERM (docker stop).
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("worker started, queue=%q, workers=%d", cfg.QueueKey, cfg.Workers)
+	logger.Info("worker started", slog.String("queue", cfg.QueueKey), slog.Int("workers", cfg.Workers))
 
 	var wg sync.WaitGroup
 	for w := 0; w < cfg.Workers; w++ {
@@ -115,7 +116,7 @@ func runWorker(cfg config.Config) {
 
 				job, err := q.Consume(ctx)
 				if err != nil {
-					logger.Debug("[worker %d] queue error: %v", id, err)
+					logger.Debug("queue error", slog.Int("worker", id), slog.String("err", err.Error()))
 					time.Sleep(time.Second) // не долбим redis при сбоях
 					continue
 				}
@@ -127,10 +128,20 @@ func runWorker(cfg config.Config) {
 
 				start := time.Now()
 				if err := imp.Execute(ctx, job); err != nil {
-					logger.Debug("[worker %d] execute failed (import=%s supplier=%s): %v",
-						id, job.ImportID, job.SupplierID, err)
+					logger.Debug(
+						"worker execute failed",
+						slog.Int("worker", id),
+						slog.String("import", job.ImportID),
+						slog.String("supplier", job.SupplierID),
+					)
 					continue
 				}
+				logger.Debug(
+					"worker execute failed",
+					slog.Int("worker", id),
+					slog.String("import", job.ImportID),
+					slog.String("supplier", job.SupplierID),
+				)
 				logger.Debug("[worker %d] import=%s supplier=%s done in %s (%d products)",
 					id, job.ImportID, job.SupplierID, time.Since(start), len(job.ProductIDs))
 			}

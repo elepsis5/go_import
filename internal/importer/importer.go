@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -28,7 +30,7 @@ const (
 
 type Importer struct {
 	db     *mongo.Database
-	logger *zap.Logger
+	logger *slog.Logger
 	// dbCategories / eqCategories / supplierID / syncType —
 	// те же поля, что обсуждали в execute и createProduct
 	// dbCategories     map[string]models.Category
@@ -39,11 +41,11 @@ type Importer struct {
 }
 
 func New(db *mongo.Database) (*Importer, error) {
-	// logger, err := zap.NewProduction() // или zap.NewDevelopment() для локального дебага
-	logger, err := zap.NewDevelopment()
-	if err != nil {
-		return nil, err
-	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true, // переключатель файла и строки
+	}))
+
 	return &Importer{db: db, logger: logger}, nil
 }
 
@@ -108,11 +110,10 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 		case "create":
 			product, err := i.CreateProduct(ctx, imp, categories)
 			if err != nil {
-				fields := []zap.Field{
-					zap.String("article", imp.Article),
-					zap.Error(err),
-				}
-				i.logger.Error("create failed", fields...)
+				i.logger.LogAttrs(ctx, slog.LevelInfo, "",
+					slog.String("article", imp.Article),
+					slog.Any("error", err),
+				)
 				continue // не роняем весь чанк из-за одного товара
 			}
 			createOps = append(createOps,
@@ -133,11 +134,10 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 			}
 			updated, err := i.UpdateProduct(ctx, imp, existing, categories)
 			if err != nil {
-				fields := []zap.Field{
-					zap.String("article", imp.Article),
-					zap.Error(err),
-				}
-				i.logger.Error("update failed", fields...)
+				i.logger.LogAttrs(ctx, slog.LevelInfo, "",
+					slog.String("article", imp.Article),
+					slog.Any("error", err),
+				)
 				continue
 			}
 			updateOps = append(updateOps,
@@ -162,14 +162,14 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 		if err != nil {
 			return err
 		}
-		i.logBulkResult("insert", res)
+		i.logBulkResult("insert", ctx, res)
 	}
 	if len(updateOps) > 0 {
 		res, err := i.db.Collection("products").BulkWrite(ctx, updateOps)
 		if err != nil {
 			return err
 		}
-		i.logBulkResult("update", res)
+		i.logBulkResult("update", ctx, res)
 	}
 
 	// 5. Помечаем записи обработанными — тоже bulk'ом
@@ -252,21 +252,19 @@ func (i *Importer) loadCategories(ctx context.Context) ([]models.Category, error
 	return slc, nil
 }
 
-func (i *Importer) logBulkResult(op string, res *mongo.BulkWriteResult) {
+func (i *Importer) logBulkResult(op string, ctx context.Context, res *mongo.BulkWriteResult) {
 	// res может быть nil при ошибке до начала bulk-операции
 	if res == nil {
 		i.logger.Error("bulk operation failed before execution", zap.String("op", op))
 		return
 	}
 
-	fields := []zap.Field{
-		zap.Int64("matched", res.MatchedCount),
-		zap.Int64("modified", res.ModifiedCount),
-		zap.Int64("upserted", res.UpsertedCount),
-		zap.Int64("inserted", res.InsertedCount),
-	}
-
-	i.logger.Info("bulk operation completed", fields...)
+	i.logger.LogAttrs(ctx, slog.LevelInfo, "",
+		slog.Int64("matched", res.MatchedCount),
+		slog.Int64("modified", res.ModifiedCount),
+		slog.Int64("upserted", res.UpsertedCount),
+		slog.Int64("inserted", res.InsertedCount),
+	)
 }
 
 // completedOps формирует массив bulk-операций для пометки записей как обработанных

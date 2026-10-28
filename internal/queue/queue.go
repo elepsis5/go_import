@@ -3,7 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -11,7 +11,6 @@ import (
 	"test/internal/config"
 
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 )
 
 type ImportJob struct {
@@ -25,10 +24,11 @@ type ImportJob struct {
 type Client struct {
 	Client *redis.Client
 	key    string
+	logger *slog.Logger
 }
 
 func New(cfg config.Config) *Client {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level:     slog.LevelDebug,
@@ -42,18 +42,19 @@ func New(cfg config.Config) *Client {
 	// --- Redis ---
 	redisAddr := os.Getenv("REDIS_ADDR")
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_ADDR"),
+		Addr:     redisAddr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       0,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("redis ping FAILED:", "error", err)
+		slog.Error("redis ping FAILED:", "error", err)
 	}
 	logger.Info("redis ping OK!", "host", redisAddr)
 
 	return &Client{
 		Client: rdb,
 		key:    cfg.QueueKey,
+		logger: logger,
 	}
 	// return &Client{
 	// 	Client: redis.NewClient(&redis.Options{
@@ -68,19 +69,25 @@ func New(cfg config.Config) *Client {
 // Consume блокируется до появления сообщения (BLPOP).
 // Таймаут 5 сек нужен, чтобы корректно реагировать на shutdown.
 func (c *Client) Consume(ctx context.Context) (*ImportJob, error) {
-	logger, err := zap.NewDevelopment()
-
 	res, err := c.Client.BLPop(ctx, 5*time.Second, c.key).Result()
-	if ctx.Err() != nil {
-		// Для BLPop таймаут — это нормальное поведение, логируем как «тихий таймаут»
-		logger.Info("тихий таймаут BLPop",
-			zap.String("key", c.key),
-			zap.Duration("timeout", 5*time.Second),
-			zap.Error(err),
+	if err != nil {
+		if ctx.Err() != nil {
+			// Для BLPop таймаут — это нормальное поведение, логируем как «тихий таймаут»
+			c.logger.Info("тихий таймаут BLPop")
+			return nil, nil // считаем это не ошибкой, а нормальным завершением цикла воркера
+		}
+		// Таймаут BLPop — нормальная ситуация для воркера, очередь пуста
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, nil
+		}
+		// Реальная ошибка: сеть, Redis упал и т.п. — сообщаем наверх
+		c.logger.Error("BLPop failed",
+			slog.String("key", c.key),
+			slog.String("err", err.Error()),
 		)
-		return nil, nil // считаем это не ошибкой, а нормальным завершением цикла воркера
+		return nil, err
 	}
-	logger.Info("содержимое res", zap.Any("res", res))
+	c.logger.Info("содержимое res", slog.Any("res", res))
 
 	// res[0] — имя ключа, res[1] — payload
 	var job ImportJob

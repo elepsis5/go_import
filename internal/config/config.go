@@ -21,7 +21,7 @@ func FromEnv() Config {
 		RedisAddr:     envOr("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: envOr("REDIS_PASSWORD", "benchpass"),
 		RedisDB:       0,
-		QueueKey:      envOr("GO_IMPORT_QUEUE", "cards_imports"),
+		QueueKey:      envOr("GO_IMPORT_QUEUE", "api_database_queues:cards_imports"),
 		Workers:       4,
 	}
 }
