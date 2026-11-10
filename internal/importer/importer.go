@@ -50,42 +50,58 @@ func New(db *mongo.Database) (*Importer, error) {
 }
 
 func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
-	i.logger.Info("мы внутри Execute")
+	// i.logger.Info("мы внутри Execute")
+	slog.Info("мы внутри Execute")
 
-	ids := make([]primitive.ObjectID, 0, len(job.ProductIDs))
-	for _, idStr := range job.ProductIDs {
-		oid, err := primitive.ObjectIDFromHex(idStr)
-		if err != nil {
-			i.logger.Error("bad product id", zap.String("id", idStr))
-			continue
-		}
-		ids = append(ids, oid)
+	// Создаем bson.A с заранее выделенной памятью
+	ids := make(bson.A, len(job.ProductIDs))
+	for i, v := range job.ProductIDs {
+		ids[i] = v
 	}
 
 	// 1. Забираем записи импорта по _id — чанк уже определён PHP-джобой,
 	//    поэтому условной блокировки не нужно (retry учтём отдельно).
+
+	oid, err := primitive.ObjectIDFromHex("6ae5a6ff8217c7a3c80001c8")
+
 	var importProducts []models.ImportProduct
 	cur, err := i.db.Collection("import_products").Find(ctx, bson.M{
-		"_id":              bson.M{"$in": ids},
-		"import_completed": bson.M{"$ne": true},
+		"_id": oid,
+		// "_id": bson.M{"$in": ids},
 	})
 	if err != nil {
+		slog.Error("Ошибка при чтении из Mongo")
 		return err
 	}
+	defer cur.Close(ctx) // курсор надо закрывать — родственник defer cancel()
+
+	// for cur.Next(ctx) {
+	// 	var raw bson.M
+	// 	if err := cur.Decode(&raw); err != nil {
+	// 		return err
+	// 	}
+	// 	j, _ := json.MarshalIndent(raw, "", "  ")
+	// 	slog.Info("raw doc", "json", string(j))
+	// }
 
 	err = cur.All(ctx, &importProducts)
 	if err != nil {
+		slog.Error("Ошибка при чтении из курсора", err)
 		return err
 	}
 
 	// 2. Загружаем контекст: supplier, категории, eq-категории
 	supplier, err := i.loadSupplier(ctx, job.SupplierID)
 	if err != nil {
+		slog.Error("Ошибка loadSupplier", err)
+
 		return err
 	}
 
 	importStruct, err := i.loadImport(ctx, job)
 	if err != nil {
+		slog.Error("Ошибка loadImport", err)
+
 		return err
 	}
 
@@ -94,6 +110,8 @@ func (i *Importer) Execute(ctx context.Context, job *queue.ImportJob) error {
 
 	categories, err := i.loadCategories(ctx)
 	if err != nil {
+		slog.Error("Ошибка loadCategories", err)
+
 		return err
 	}
 	// if err := i.loadEqCategories(ctx, job.ImportID); err != nil {
@@ -198,19 +216,21 @@ func (i *Importer) writeResult(ctx context.Context, job *queue.ImportJob, count 
 
 func (i *Importer) loadSupplier(ctx context.Context, id string) (*models.Supplier, error) {
 	uid := strings.TrimSpace(id)
-	if len(uid) == 0 {
+	objId, err := primitive.ObjectIDFromHex(uid)
+
+	if err != nil || len(uid) == 0 {
 		return nil, errors.New("Suppliers ID must not be empty")
 	}
-	cur, err := i.db.Collection("suppliers").Find(ctx, bson.M{"_id": uid})
-	if err != nil {
-		return nil, err
-	}
+	cur := i.db.Collection("suppliers").FindOne(ctx, bson.M{"_id": objId})
+
+	slog.Info("cur из suppliers", "cur", cur)
 
 	var supplier models.Supplier
 	if err := cur.Decode(&supplier); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("Supplier not found for ID %v: %w", uid, err)
 		}
+		slog.Error("Ошибка cur.Decode(&supplier)", "err", err)
 		return nil, err
 	}
 	return &supplier, nil

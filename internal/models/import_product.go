@@ -18,7 +18,7 @@ type ImportProduct struct {
 
 	// Raw — данные из загрузки поставщика.
 	// В Mongo все значения — строки ("430", "210000"), поэтому тип — string.
-	Product RawProduct `bson:"product"`
+	Product SourceProduct `bson:"product"`
 
 	Article string `bson:"article"`
 
@@ -40,38 +40,121 @@ type ImportProduct struct {
 // RawProduct — блок product из документа поставщика.
 // Все поля здесь приходят строками из Excel/CSV, поэтому int/float не парсим:
 // это зона ответственности валидации (PHP), а не воркера.
-type RawProduct struct {
-	Name         string   `bson:"name"`
-	Description  string   `bson:"description,omitempty"`
-	Article      string   `bson:"article"`
-	Brand        string   `bson:"brand,omitempty"`
-	Category     string   `bson:"category,omitempty"` // "/Кофемашины/" — путь строкой
-	EqCategory   string   `bson:"eq_category,omitempty"`
-	Country      string   `bson:"country,omitempty"`
-	Length       string   `bson:"length,omitempty"`
-	Width        string   `bson:"width,omitempty"`
-	Height       string   `bson:"height,omitempty"`
-	Weight       string   `bson:"weight,omitempty"`
-	WeightGross  string   `bson:"weight_gross,omitempty"`
-	Power        string   `bson:"power,omitempty"`
-	Voltage      string   `bson:"voltage,omitempty"`
-	PriceCatalog float64  `bson:"price_catalog,omitempty"`
-	PriceDealer  float64  `bson:"price_dealer,omitempty"`
-	Currency     string   `bson:"currency,omitempty"`
-	Availability string   `bson:"availability,omitempty"`
-	DeliveryTime string   `bson:"delivery_time,omitempty"`
-	Images       []bson.M `bson:"images,omitempty"` // в примере — одиночная строка с URL
-	Files        []bson.M `bson:"files,omitempty"`
-	Params       []bson.M `bson:"params,omitempty"` // в примере пустые массивы; если структура известна — замените bson.M на типы
-	EqParams     []bson.M `bson:"eq_params,omitempty"`
+type SourceProduct struct {
+	Name         string            `json:"name"`
+	Description  string            `json:"description"`
+	Article      string            `json:"article"`
+	Brand        string            `json:"brand"`
+	Category     string            `json:"category"`
+	EqCategory   *string           `json:"eq_category"`
+	Country      string            `json:"country"`
+	Length       string            `json:"length"`
+	Width        string            `json:"width"`
+	Height       string            `json:"height"`
+	Weight       string            `json:"weight"`
+	WeightGross  string            `json:"weight_gross"`
+	Power        string            `json:"power"`
+	Voltage      string            `json:"voltage"`
+	PriceCatalog string            `json:"price_catalog"`
+	PriceDealer  string            `json:"price_dealer"`
+	Currency     string            `json:"currency"`
+	Availability string            `json:"availability"`
+	DeliveryTime string            `json:"delivery_time"`
+	Images       string            `json:"images"`
+	Files        string            `json:"files"`
+	Params       map[string]string `json:"params"`
+	EqParams     []any             `json:"eq_params"`
 }
 
 type Validation struct {
-	Index    int8     `bson:"index"`
-	Article  string   `bson:"article"`
-	Product  bson.M   `bson:"product"`
-	Warnings []bson.M `bson:"warnings"`
-	Status   string   `bson:"status"`
-	Errors   []bson.M `bson:"errors"`
-	ImportId string   `bson:"import_id"`
+	Index    int8          `bson:"index"`
+	Article  string        `bson:"article"`
+	Product  ResultProduct `bson:"product"`
+	Warnings []bson.M      `bson:"warnings"`
+	Status   string        `bson:"status"`
+	Errors   []bson.M      `bson:"errors"`
+	ImportId string        `bson:"import_id"`
+}
+
+type ResultProduct struct {
+	PriceCatalog         float64           `json:"price_catalog"`
+	PriceDealer          float64           `json:"price_dealer"`
+	Images               []string          `json:"images"`
+	Files                []string          `json:"files"`
+	ImagesAll            []string          `json:"images_all"`
+	FilesAll             []string          `json:"files_all"`
+	EquipcadID           *int64            `json:"equipcad_id"`
+	Equipcad             Equipcad          `json:"equipcad"`
+	LastAcceptedDate     *string           `json:"last_accepted_date"`
+	Moderation           *Moderation       `json:"moderation"`
+	Moderations          []Moderation      `json:"moderations"`
+	ModeratorLastActions ModeratorActions  `json:"moderator_last_actions"`
+	EqParams             map[string]any    `json:"eq_params"`
+	Distributors         []any             `json:"distributors"`
+	Offers               []any             `json:"offers"`
+	ContentUpdatedAt     *string           `json:"content_updated_at"`
+	CommercialUpdatedAt  *string           `json:"commercial_updated_at"`
+	Index                int               `json:"index"`
+	ImportID             string            `json:"import_id"`
+	Active               int               `json:"active"`
+	Name                 string            `json:"name"`
+	Description          string            `json:"description"`
+	Article              string            `json:"article"`
+	Brand                string            `json:"brand"`
+	CategoryDetected     bool              `json:"category_detected"`
+	Category             string            `json:"category"`
+	Categories           string            `json:"categories"`
+	EqCategory           any               `json:"eq_category"`
+	EqCategories         any               `json:"eq_categories"`
+	Country              string            `json:"country"`
+	Length               int               `json:"length"`
+	Width                int               `json:"width"`
+	Height               int               `json:"height"`
+	Weight               float64           `json:"weight"`
+	WeightGross          float64           `json:"weight_gross"`
+	Power                float64           `json:"power"`
+	Voltage              int               `json:"voltage"`
+	Currency             string            `json:"currency"`
+	Availability         string            `json:"availability"`
+	DeliveryTime         string            `json:"delivery_time"`
+	ImagesOrigin         string            `json:"images_origin"`
+	FilesOrigin          string            `json:"files_origin"`
+	ParamsOrigin         map[string]string `json:"params_origin"`
+	Params               map[string]string `json:"params"`
+	NeedModeration       int               `json:"need_moderation"`
+	OnModeration         OnModeration      `json:"on_moderation"`
+}
+
+type Equipcad struct {
+	ExportChangesDate *string      `json:"export_changes_date"`
+	RecentChanges     *string      `json:"recent_changes"`
+	Data              EquipcadData `json:"data"`
+	Moderation        *Moderation  `json:"moderation"`
+	Moderations       any          `json:"moderations"`
+}
+
+type EquipcadData struct {
+	Model3D    *string `json:"model_3d"`
+	Sketch3D   *string `json:"sketch_3d"`
+	Electrical *string `json:"electrical"`
+	Water      *string `json:"water"`
+	Sewerage   *string `json:"sewerage"`
+	Trap       *string `json:"trap"`
+	Gas        *string `json:"gas"`
+}
+
+type ModeratorActions struct {
+	ChangeActivity         *string `json:"change_activity"`
+	ChangeFields           *string `json:"change_fields"`
+	ChangeModerationStatus *string `json:"change_moderation_status"`
+}
+
+type Moderation struct {
+	// Поля зависят от фактической структуры moderation.
+}
+
+type OnModeration struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Brand       string `json:"brand"`
 }

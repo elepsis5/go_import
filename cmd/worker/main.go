@@ -21,6 +21,7 @@ import (
 )
 
 func main() {
+	slog.Info("==СТАРТ==") ///////////////////////////////////////////////////
 	cfg := config.FromEnv()
 
 	// Подкоманда healthcheck: вызывается из docker-compose healthcheck.
@@ -61,7 +62,11 @@ func runHealthcheck(cfg config.Config) int {
 
 // runWorker — основной режим: вечный цикл чтения очереди + пул горутин.
 func runWorker(cfg config.Config) {
-	ctx, cancel := context.WithCancel(context.Background())
+	slog.Info("работает runWorker") ///////////////////////////////////////////////////
+
+	// ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
 	defer cancel()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -77,7 +82,7 @@ func runWorker(cfg config.Config) {
 
 	// Проверяем связь сразу на старте: если mongo недоступна,
 	// контейнер упадёт и docker его перезапустит — лучше, чем висеть в ошибках.
-	ctxPing, cancelPing := context.WithTimeout(ctx, 5*time.Second)
+	ctxPing, cancelPing := context.WithTimeout(ctx, 1*time.Second)
 	defer cancelPing()
 	if err := mClient.Client.Ping(ctxPing, readpref.Primary()); err != nil {
 		logger.Error("mongo ping:", "error", err)
@@ -97,27 +102,36 @@ func runWorker(cfg config.Config) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("worker started", slog.String("queue", cfg.QueueKey), slog.Int("workers", cfg.Workers))
+	slog.Info("worker started", slog.String("queue", cfg.QueueKey), slog.Int("workers", cfg.Workers))
 
 	var wg sync.WaitGroup
 	for w := 0; w < cfg.Workers; w++ {
 		wg.Add(1)
 		go func(id int) {
+			deadline := time.After(1 * time.Second)
 			defer wg.Done()
 			for {
 				select {
+				case <-deadline:
+					slog.Info("worker: время истекло, завершаюсь", "горутина:", w) ///////////////////////////////////////////////////
+
+					return
+				case <-ctxPing.Done():
+					slog.Info("лог ctxPing.Done()", "горутина:", w) ///////////////////////////////////////////////////
+
+					return
 				case <-ctx.Done():
-					logger.Debug("лог ctx.Done()") ///////////////////////////////////////////////////
+					slog.Info("лог ctx.Done()", "горутина:", w) ///////////////////////////////////////////////////
 
 					return
 				default:
 				}
-				logger.Debug("лог перед q.Consume") ///////////////////////////////////////////////////
+				// logger.Debug("лог перед q.Consume") ///////////////////////////////////////////////////
 
 				job, err := q.Consume(ctx)
 				if err != nil {
 					logger.Debug("queue error", slog.Int("worker", id), slog.String("err", err.Error()))
-					time.Sleep(time.Second) // не долбим redis при сбоях
+					// time.Sleep(time.Second) // не долбим redis при сбоях
 					continue
 				}
 				if job == nil { // таймаут BLPOP — тихо ждём дальше

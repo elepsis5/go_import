@@ -35,9 +35,9 @@ func New(cfg config.Config) *Client {
 		AddSource: true, // ← вот переключатель файла и строки
 	}))
 
-	logger.Info("", "cfg.RedisAddr", cfg.RedisAddr)
-	logger.Info("", "cfg.RedisPassword", cfg.RedisPassword)
-	logger.Info("", "cfg.RedisDB", cfg.RedisDB)
+	// logger.Info("", "cfg.RedisAddr", cfg.RedisAddr)
+	// logger.Info("", "cfg.RedisPassword", cfg.RedisPassword)
+	// logger.Info("", "cfg.RedisDB", cfg.RedisDB)
 
 	// --- Redis ---
 	redisAddr := os.Getenv("REDIS_ADDR")
@@ -49,7 +49,7 @@ func New(cfg config.Config) *Client {
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping FAILED:", "error", err)
 	}
-	logger.Info("redis ping OK!", "host", redisAddr)
+	slog.Info("redis ping OK!", "host", redisAddr)
 
 	return &Client{
 		Client: rdb,
@@ -69,25 +69,35 @@ func New(cfg config.Config) *Client {
 // Consume блокируется до появления сообщения (BLPOP).
 // Таймаут 5 сек нужен, чтобы корректно реагировать на shutdown.
 func (c *Client) Consume(ctx context.Context) (*ImportJob, error) {
-	res, err := c.Client.BLPop(ctx, 5*time.Second, c.key).Result()
+	res, err := c.Client.BLPop(ctx, 1*time.Second, c.key).Result()
 	if err != nil {
-		if ctx.Err() != nil {
-			// Для BLPop таймаут — это нормальное поведение, логируем как «тихий таймаут»
-			c.logger.Info("тихий таймаут BLPop")
-			return nil, nil // считаем это не ошибкой, а нормальным завершением цикла воркера
-		}
-		// Таймаут BLPop — нормальная ситуация для воркера, очередь пуста
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case ctx.Err() != nil:
+			slog.Info("Контекст отменён снаружи — graceful shutdown")
+			// Контекст отменён снаружи — graceful shutdown
 			return nil, nil
+
+		case errors.Is(err, redis.Nil):
+			slog.Info("Таймаут BLPOP истёк, очередь пуста — это нормально.")
+			// Таймаут BLPOP истёк, очередь пуста — это нормально.
+			// Воркер просто продолжает цикл.
+			return nil, nil
+
+		default:
+			slog.Info("Реальная ошибка: сеть, Redis недоступен и т.п.")
+			// Реальная ошибка: сеть, Redis недоступен и т.п.
+
+			return nil, err
 		}
-		// Реальная ошибка: сеть, Redis упал и т.п. — сообщаем наверх
-		c.logger.Error("BLPop failed",
-			slog.String("key", c.key),
+	}
+
+	err = c.RestoreRaw(ctx, res[1])
+	if err != nil {
+		c.logger.Error("LPush failed",
 			slog.String("err", err.Error()),
 		)
-		return nil, err
 	}
-	c.logger.Info("содержимое res", slog.Any("res", res))
+	// c.logger.Info("содержимое res", slog.Any("res", res))
 
 	// res[0] — имя ключа, res[1] — payload
 	var job ImportJob
@@ -95,4 +105,9 @@ func (c *Client) Consume(ctx context.Context) (*ImportJob, error) {
 		return nil, err // битое сообщение — логируем и идём дальше
 	}
 	return &job, nil
+}
+
+// RestoreRaw возвращает оригинальный payload в очередь
+func (c *Client) RestoreRaw(ctx context.Context, payload string) error {
+	return c.Client.LPush(ctx, c.key, payload).Err()
 }
